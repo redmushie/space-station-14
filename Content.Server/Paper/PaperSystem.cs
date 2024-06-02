@@ -11,6 +11,12 @@ using Robust.Server.GameObjects;
 using Robust.Shared.Player;
 using Robust.Shared.Audio.Systems;
 using static Content.Shared.Paper.SharedPaperComponent;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Robust.Shared.Utility;
+using System.Runtime.Serialization;
+using Content.Server.Station.Systems;
+using Robust.Shared.Timing;
+using Content.Server.GameTicking;
 
 namespace Content.Server.Paper
 {
@@ -25,9 +31,18 @@ namespace Content.Server.Paper
         [Dependency] private readonly MetaDataSystem _metaSystem = default!;
         [Dependency] private readonly SharedAudioSystem _audio = default!;
 
+        [Dependency] private readonly StationSystem _stationSystem = default!;
+        [Dependency] private readonly IGameTiming _gameTiming = default!;
+
+        [Dependency] private readonly IEntitySystemManager _entitySystem = default!;
+        private GameTicker? _gameTicker;
+
+        private readonly Dictionary<string, Func<EntityUid, IEnumerable<MarkupNode>>> _templates = new();
+
         public override void Initialize()
         {
             base.Initialize();
+            _gameTicker = _entitySystem.GetEntitySystem<GameTicker>();
 
             SubscribeLocalEvent<PaperComponent, ComponentInit>(OnInit);
             SubscribeLocalEvent<PaperComponent, BeforeActivatableUIOpenEvent>(BeforeUIOpen);
@@ -38,7 +53,15 @@ namespace Content.Server.Paper
             SubscribeLocalEvent<ActivateOnPaperOpenedComponent, PaperWriteEvent>(OnPaperWrite);
 
             SubscribeLocalEvent<PaperComponent, MapInitEvent>(OnMapInit);
+
+            _templates.Add("logo", NanoTrasenLogo1);
+            _templates.Add("logo1", NanoTrasenLogo1);
+            _templates.Add("logo2", NanoTrasenLogo2);
+            _templates.Add("syndielogo", SyndicateLogo);
+            _templates.Add("station", StationName);
+            _templates.Add("time", StationTime);
         }
+
 
         private void OnMapInit(EntityUid uid, PaperComponent paperComp, MapInitEvent args)
         {
@@ -139,11 +162,78 @@ namespace Content.Server.Paper
             };
         }
 
+        #region Substitutions
+
+        private IEnumerable<MarkupNode> NanoTrasenLogo1(EntityUid ignored)
+        {
+            return FormattedMessage.FromUnformatted(@"███░███░░░░██░░░░
+░██░████░░░██░░░░
+░░█░██░██░░██░█░░
+░░░░██░░██░██░██░
+░░░░██░░░████░███").Nodes;
+        }
+
+        private IEnumerable<MarkupNode> NanoTrasenLogo2(EntityUid ignored)
+        {
+            return FormattedMessage.FromUnformatted(@"███╗░░██╗████████╗
+████╗░██║╚══██╔══╝
+██╔██╗██║░░░██║░░░
+██║╚████║░░░██║░░░
+██║░╚███║░░░██║░░░
+╚═╝░░╚══╝░░░╚═╝░░░").Nodes;
+
+        }
+
+        private IEnumerable<MarkupNode> SyndicateLogo(EntityUid ignored)
+        {
+            return FormattedMessage.FromUnformatted(@"███░██████░███
+█░░░██░░░░░░░█
+█░░░░████░░░░█
+█░░░░░░░██░░░█
+███░██████░███").Nodes;
+        }
+
+        private IEnumerable<MarkupNode> StationName(EntityUid uid)
+        {
+            var station = _stationSystem.GetOwningStation(uid);
+            string stationName = station is null ? "" : Name(station.Value);
+            return FormattedMessage.FromUnformatted(stationName).Nodes;
+        }
+
+        private IEnumerable<MarkupNode> StationTime(EntityUid ignored)
+        {
+            var stationTime = _gameTiming.CurTime.Subtract(_gameTicker!.RoundStartTimeSpan).ToString("hh\\:mm\\:ss");
+            return FormattedMessage.FromUnformatted(stationTime).Nodes;
+        }
+
+        private string ProcessSubstitutions(string text, EntityUid uid)
+        {
+            // Parse the user input.
+            FormattedMessage formatted = new FormattedMessage();
+            formatted.AddMarkup(text);
+
+            // We replace all matching nodes with our substitutions.
+            FormattedMessage msg = formatted.Nodes
+                .SelectMany(node => _templates.ContainsKey(node.Name ?? "") ? _templates[node.Name ?? ""](uid) : [node])
+                .Aggregate(new FormattedMessage(), (msg, node) =>
+                {
+                    msg.PushTag(node);
+                    return msg;
+                });
+
+            return msg.ToMarkup();
+        }
+
+        #endregion
+
         private void OnInputTextMessage(EntityUid uid, PaperComponent paperComp, PaperInputTextMessage args)
         {
-            if (args.Text.Length <= paperComp.ContentSize)
+            // Preprocess the text.
+            string text = ProcessSubstitutions(args.Text, uid);
+
+            if (text.Length <= paperComp.ContentSize)
             {
-                paperComp.Content = args.Text;
+                paperComp.Content = text;
 
                 if (TryComp<AppearanceComponent>(uid, out var appearance))
                     _appearance.SetData(uid, PaperVisuals.Status, PaperStatus.Written, appearance);
