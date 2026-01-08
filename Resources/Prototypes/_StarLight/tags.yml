@@ -419,4 +419,6 @@
 
 - type: Tag
   id: FestiveDinner
-  
+
+- type: Tag
+  id: Labelable
